@@ -50,6 +50,13 @@ class GUIMainWindow(gui_main.Ui_MainWindow, QtWidgets.QMainWindow):
 
         self._get_all_the_HFW_to_use()
 
+        try:
+            self.initialise_hardware()
+        except Exception as e:
+            print(f'Could not initialise the microscope, Error {e}')
+            self.label_messages.setText('Could not initialise the microscope: ' + str(e))
+
+
     def setup_connections(self):
         self.pushButton_acquire.clicked.connect(lambda: self.acquire_image())
         self.pushButton_select_directory.clicked.connect(lambda: self.select_directory())
@@ -74,7 +81,6 @@ class GUIMainWindow(gui_main.Ui_MainWindow, QtWidgets.QMainWindow):
         resolution = self.comboBox_resolution.currentText()
         dwell_time = self.spinBox_dwell_time.value() * 1e-6
         horizontal_field_width = self.spinBox_horizontal_field_width.value() * 1e-6
-        detector = self.comboBox_detector.currentText()
         autocontrast = self.checkBox_autocontrast.isChecked()
         beam_type = self.comboBox_beam_type.currentText()
         if beam_type == "ELECTRON":
@@ -83,7 +89,11 @@ class GUIMainWindow(gui_main.Ui_MainWindow, QtWidgets.QMainWindow):
             beam_type = BeamType.ION
         else:
             beam_type = BeamType.ELECTRON
+
         quadrant = int(self.comboBox_quadrant.currentText())
+        q1 = self.checkBox_q1.isChecked()
+        q2 = self.checkBox_q2.isChecked()
+
         path = self.DIR
         sample_name = self.plainTextEdit_sample_name.toPlainText()
         bit_depth = int(self.comboBox_bit_depth.currentText())
@@ -95,7 +105,6 @@ class GUIMainWindow(gui_main.Ui_MainWindow, QtWidgets.QMainWindow):
                 "resolution": resolution,
                 "horizontal_field_width": horizontal_field_width,
                 "dwell_time": dwell_time,
-                "detector": detector,
                 "autocontrast": autocontrast,
                 "beam_type": beam_type,
                 "quadrant": quadrant,
@@ -103,7 +112,9 @@ class GUIMainWindow(gui_main.Ui_MainWindow, QtWidgets.QMainWindow):
                 "sample_name": sample_name,
                 "bit_depth": bit_depth,
                 "drift_correction" : drift_correction,
-                'frame_integration' : frame_integration
+                'frame_integration' : frame_integration,
+                'q1' : q1,
+                'q2' : q2
             }
         }
         return self.all_settings
@@ -136,6 +147,26 @@ class GUIMainWindow(gui_main.Ui_MainWindow, QtWidgets.QMainWindow):
         self.doubleSpinBox_pixel_size.setValue(self.pixelsize_x / 1e-9)
         self.update_display(image=self.image)
         return self.image
+
+
+    def acquire_multiple_frames(self,
+                                hfw = None):
+        all_settings = self.create_settings_dict()
+        if hfw is not None:
+            all_settings["imaging"]["horizontal_field_width"] = hfw
+
+        self.images = \
+            self.microscope.acquire_multiple_frames(all_settings=all_settings,
+                                                    hfw=hfw)
+        try:
+            self.pixelsize_x = self.images[0].metadata.binary_result.pixel_size.x
+        except Exception as e:
+            self.pixelsize_x = 1
+            print(f'Cannot extract pixel size from the image metadata, error {e}')
+
+        self.doubleSpinBox_pixel_size.setValue(self.pixelsize_x / 1e-9)
+        self.update_display(image=self.images[0])
+        return self.images
 
 
     def last_image(self):
@@ -267,20 +298,19 @@ class GUIMainWindow(gui_main.Ui_MainWindow, QtWidgets.QMainWindow):
 
         """Store the current microscope state, including the current position"""
         stored_microscope_state = self.microscope._get_current_microscope_state()
-        x0 = stored_microscope_state.x
-        y0 = stored_microscope_state.y
-        z0 = stored_microscope_state.z
-        t0 = stored_microscope_state.t
-        r0 = stored_microscope_state.r
-        scan_rot0 = stored_microscope_state.scan_rotation_angle
+        # x0 = stored_microscope_state.x
 
         """Create directory for saving the stack"""
-        if self.DIR:
-            self.stack_dir = os.path.join(self.DIR, 'stack_' + sample_name + '_' + timestamp)
+        if self.DIR is not None:
+            self.stack_dir = self.DIR
         else:
-            self.stack_dir = os.path.join(os.getcwd(), 'stack_' + sample_name + '_' + timestamp)
-        if not os.path.isdir(self.stack_dir):
-            os.mkdir(self.stack_dir)
+            self.stack_dir = os.getcwd()
+        # if self.DIR:
+        #     self.stack_dir = os.path.join(self.DIR, 'stack_' + sample_name + '_' + timestamp)
+        # else:
+        #     self.stack_dir = os.path.join(os.getcwd(), 'stack_' + sample_name + '_' + timestamp)
+        # if not os.path.isdir(self.stack_dir):
+        #     os.mkdir(self.stack_dir)
 
         self.label_messages.setText(f"stack save dir {self.stack_dir}")
 
@@ -299,25 +329,52 @@ class GUIMainWindow(gui_main.Ui_MainWindow, QtWidgets.QMainWindow):
             for hfw_and_status in HFW_and_selections:
                 hfw = hfw_and_status[0]
                 status = hfw_and_status[1]
-                print(hfw_and_status, hfw, status)
+                magnification = hfw_and_status[2]
+                print(hfw_and_status, hfw, status, magnification)
 
                 if status==True:
+
                     self.microscope._get_current_microscope_state()
 
-                    file_name = '%06d_' % counter + sample_name + '_' +  utils.current_timestamp() + '.tif'
+                    # if not both q1 and q2 selected, then grab image only from a SIGNLE selected quadrant
+                    if not (self.checkBox_q1.isChecked() and self.checkBox_q2.isChecked()):
+                        timestamp = utils.current_timestamp()
+                        self.spinBox_horizontal_field_width.setValue(hfw)
 
-                    """ This is a high-level procedure to acquire an image using the settings from the GUI """
-                    image = self.acquire_image(hfw=hfw*1e-6)
-                    self.spinBox_horizontal_field_width.setValue(hfw)
+                        file_name = '%06d_' % counter + sample_name + '_' + \
+                                    str(hfw) + '_' +  timestamp + '.tif'
 
-                    utils.save_image(image, path=self.stack_dir, file_name=file_name)
+                        """ This is a high-level procedure to acquire an image using the settings from the GUI """
+                        image = self.acquire_image(hfw=hfw*1e-6)
 
-                    self.experiment_data = utils.populate_experiment_data_frame(
-                        data_frame=self.experiment_data,
-                        microscope_state=self.microscope.microscope_state,
-                        file_name=file_name,
-                        timestamp=utils.current_timestamp(),
-                        keys=keys)
+                        utils.save_image(image, path=self.stack_dir, file_name=file_name)
+
+                        self.experiment_data = utils.populate_experiment_data_frame(
+                            data_frame=self.experiment_data,
+                            microscope_state=self.microscope.microscope_state,
+                            file_name=file_name,
+                            timestamp=utils.current_timestamp(),
+                            keys=keys)
+
+                    # if  both q1 and q2 ARE selected, then grab multiframe image
+                    elif  (self.checkBox_q1.isChecked() and self.checkBox_q2.isChecked()):
+                        timestamp = utils.current_timestamp()
+                        self.spinBox_horizontal_field_width.setValue(hfw)
+
+                        """ This is a high-level procedure to acquire an image using the settings from the GUI """
+                        images = self.acquire_multiple_frames(hfw=hfw * 1e-6)
+
+                        for ii in range(len(images)):
+                            file_name = '%06d_' % counter + sample_name + '_' + \
+                                           str(hfw) + '_' + str(ii) + '_' + timestamp + '.tif'
+                            utils.save_image(images[ii], path=self.stack_dir, file_name=file_name)
+
+                            self.experiment_data = utils.populate_experiment_data_frame(
+                                data_frame=self.experiment_data,
+                                microscope_state=self.microscope.microscope_state,
+                                file_name=file_name,
+                                timestamp=utils.current_timestamp(),
+                                keys=keys)
 
                     counter += 1
 
@@ -341,24 +398,6 @@ class GUIMainWindow(gui_main.Ui_MainWindow, QtWidgets.QMainWindow):
         #self.microscope._restore_microscope_state(state=stored_microscope_state)
 
 
-    def _get_all_the_HFW_to_use(self):
-        selected_hfw = []
-        field_widths = [attr for attr in dir(self) if not callable(getattr(self, attr)) and attr.startswith("doubleSpinBox_hfw")]
-        self.field_widths = ['self.'+ii for ii in field_widths]
-        print(self.field_widths)
-        ##############
-        clicked = [attr for attr in dir(self) if not callable(getattr(self, attr)) and attr.startswith("checkBox_hfw")]
-        self.clicked = ['self.'+ii for ii in clicked]
-        print(self.clicked)
-        for ii in range(len(self.field_widths)):
-            print( eval( self.field_widths[ii] + '.value()' ),  ' - ', eval( self.clicked[ii] + '.isChecked()' ))
-            selected_hfw.append( [eval(self.field_widths[ii] + '.value()'),
-                                  eval(self.clicked[ii] + '.isChecked()')
-                                 ]
-                                )
-        return selected_hfw
-
-
     def _abort_clicked(self):
         print('------------ abort clicked --------------')
         self.pushButton_abort_stack_collection.setEnabled(False)
@@ -374,7 +413,6 @@ class GUIMainWindow(gui_main.Ui_MainWindow, QtWidgets.QMainWindow):
                                                    options=options)
         if file_name:
             print(file_name)
-            # data format files saved by PiXet detector
             if file_name.lower().endswith('.tif') or file_name.lower().endswith('.tiff'):
                 self.image = utils.load_image(file_name)
                 self.update_display(image=self.image)
@@ -407,6 +445,34 @@ class GUIMainWindow(gui_main.Ui_MainWindow, QtWidgets.QMainWindow):
         if self.image is not None:
             self.update_display(self.image)
 
+
+    def _get_all_the_HFW_to_use(self):
+        selected_hfw = []
+        ##################################################################################################
+        field_widths = [attr for attr in dir(self) if not callable(getattr(self, attr)) and attr.startswith("doubleSpinBox_hfw")]
+        self.field_widths = ['self.'+ii for ii in field_widths]
+        print(self.field_widths)
+        ##################################################################################################
+        clicked = [attr for attr in dir(self) if not callable(getattr(self, attr)) and attr.startswith("checkBox_hfw")]
+        self.clicked = ['self.'+ii for ii in clicked]
+        print(self.clicked)
+        ##################################################################################################
+        magnifications = [attr for attr in dir(self) if
+                          not callable(getattr(self, attr)) and attr.startswith("label_hfw")]
+        self.magnifications = ['self.' + ii for ii in magnifications]
+        ##################################################################################################
+        for ii in range(len(self.field_widths)):
+            print( eval( self.field_widths[ii] + '.value()' ),
+                   ' - ',
+                   eval( self.clicked[ii] + '.isChecked()' ),
+                   ' - ',
+                   eval( self.magnifications[ii] + '.text()' ) )
+            selected_hfw.append( [eval(self.field_widths[ii] + '.value()'),
+                                  eval(self.clicked[ii] + '.isChecked()'),
+                                  eval(self.magnifications[ii] + '.text()')
+                                 ]
+                                )
+        return selected_hfw
 
     def disconnect(self):
         # logging.info("Running cleanup/teardown")

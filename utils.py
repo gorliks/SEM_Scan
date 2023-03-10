@@ -1,6 +1,6 @@
 import datetime
 import time
-import os
+import os, glob
 import pandas as pd
 import numpy as np
 import re
@@ -210,7 +210,9 @@ def save_data_frame(data_frame : dict,
     None
     """
     d = pd.DataFrame(data=data_frame)
-    file_name = os.path.join(path, file_name + '.csv')
+    N = len(glob.glob(os.path.join(path, '*.csv') ) )
+    print('N = ', N)
+    file_name = os.path.join(path, file_name + '_%03d'%(N+1) + '.csv')
     d.to_csv(file_name)
 
 

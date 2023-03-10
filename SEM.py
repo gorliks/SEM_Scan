@@ -9,15 +9,23 @@ try:
                                                              Point,
                                                              MoveSettings,
                                                              StagePosition)
-    from autoscript_sdb_microscope_client.enumerations import (
-                                                        CoordinateSystem)
+    from autoscript_sdb_microscope_client.enumerations import (CoordinateSystem,
+                                                               ScanningResolution)
+
+    resolutions = {'1024x884'  : ScanningResolution.PRESET_1024X884,
+                   '1536x1024' : ScanningResolution.PRESET_1536X1024,
+                   '2048x1768' : ScanningResolution.PRESET_2048X1768,
+                   '3072x2048' : ScanningResolution.PRESET_3072X2048,
+                   '4096x3536' : ScanningResolution.PRESET_4096X3536,
+                   '512x442'   : ScanningResolution.PRESET_512X442,
+                   '6144x4096' : ScanningResolution.PRESET_6144X4096,
+                   '768x512'   : ScanningResolution.PRESET_768X512}
+
 except:
     print('Autoscript module not found')
 
 import numpy as np
-from dataclasses import dataclass
 import utils
-
 
 from importlib import reload  # Python 3.4+
 reload(utils)
@@ -166,6 +174,7 @@ class Microscope():
         if not self.demo:
             if all_settings is not None:
                 settings = self.update_image_settings(all_settings)
+
                 self.microscope.imaging.set_active_view(settings.quadrant)
 
                 if hfw is not None:
@@ -183,7 +192,7 @@ class Microscope():
                 if settings.frame_integration <= 0:
                     settings.frame_integration = 1
 
-                grab_frame_settings = GrabFrameSettings(resolution=settings.resolution,
+                grab_frame_settings = GrabFrameSettings(resolution=resolutions[settings.resolution],
                                                         dwell_time=settings.dwell_time,
                                                         bit_depth=settings.bit_depth,
                                                         drift_correctiion=settings.drift_correction,
@@ -191,6 +200,7 @@ class Microscope():
                 image = self.microscope.imaging.grab_frame(grab_frame_settings)
             else:
                 image = self.microscope.imaging.grab_frame()
+
 
             return image
 
@@ -205,6 +215,56 @@ class Microscope():
                 height, width = 768, 512
             simulated_image = np.random.randint(0, 255, [height,width])
             return simulated_image
+
+    def acquire_multiple_frames(self, all_settings: dict,
+                                hfw = None):
+        """Take new electron image from several quadrants.
+        Returns
+        -------
+        array of AdornedImages
+        """
+        print('acquiring images...')
+
+        if not self.demo:
+            settings = self.update_image_settings(all_settings)
+
+            if hfw is not None:
+                hfw = hfw
+            else:
+                hfw = settings.horizontal_field_width
+
+            if hfw > self.microscope.beams.electron_beam.horizontal_field_width.limits.max:
+                hfw = self.microscope.beams.electron_beam.horizontal_field_width.limits.max
+
+            self.microscope.beams.electron_beam.horizontal_field_width.value = hfw
+
+            if settings.autocontrast == True:
+                self.autocontrast(quadrant=1)
+                self.autocontrast(quadrant=2)
+
+            if settings.frame_integration <= 0:
+                settings.frame_integration = 1
+
+            grab_frame_settings = GrabFrameSettings(resolution=resolutions[settings.resolution],
+                                                    dwell_time=settings.dwell_time,
+                                                    bit_depth=settings.bit_depth,
+                                                    frame_integration=settings.frame_integration)
+            images = self.microscope.imaging.grab_multiple_frames(grab_frame_settings)
+
+            return images
+
+        else:
+            print('demo mode multiple frames  ')
+            if all_settings is not None:
+                settings = self.update_image_settings(all_settings)
+                print('settings = ', settings)
+                resolution = settings.resolution
+                [width, height] = np.array(resolution.split("x")).astype(int)
+            else:
+                height, width = 768, 512
+            simulated_image = np.random.randint(0, 255, [height, width])
+            return [simulated_image, simulated_image]
+
 
 
     def last_image(self,  quadrant : int, save : bool = False):
@@ -434,7 +494,9 @@ class Microscope():
                               path=None,
                               bit_depth=None,
                               drift_correction=None,
-                              frame_integration=None
+                              frame_integration=None,
+                              q1=None,
+                              q2=None
                               ):
         """Update image settings. Uses default values if not supplied
         Args:
@@ -500,6 +562,11 @@ class Microscope():
             self.drift_correction = drift_correction
         else:
             self.drift_correction = all_settings["imaging"]["drift_correction"]
+
+        if frame_integration:
+            self.frame_integration = frame_integration
+        else:
+            self.frame_integration = all_settings["imaging"]["frame_integration"]
 
         if frame_integration:
             self.frame_integration = frame_integration
